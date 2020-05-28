@@ -183,7 +183,7 @@ void DecodeTrace::paint_back(QPainter &p, int left, int right, QColor fore, QCol
     p.drawLine(left, sigY, right, sigY);
 
     // --draw decode region control
-    const double samples_per_pixel = _session.cur_samplerate() * _view->scale();
+    const double samples_per_pixel = _session.cur_snap_samplerate() * _view->scale();
     const double startX = _decode_start/samples_per_pixel - _view->offset();
     const double endX = _decode_end/samples_per_pixel - _view->offset();
     const double regionY = get_y() - _totalHeight*0.5 - ControlRectWidth;
@@ -782,7 +782,7 @@ QComboBox* DecodeTrace::create_probe_selector(
 
 	QComboBox *selector = new QComboBox(parent);
 
-    selector->addItem("-", qVariantFromValue(-1));
+    selector->addItem("-", QVariant::fromValue(-1));
 
 	if (probe_iter == dec->channels().end())
 		selector->setCurrentIndex(0);
@@ -794,7 +794,7 @@ QComboBox* DecodeTrace::create_probe_selector(
 		if (dynamic_pointer_cast<LogicSignal>(s) && s->enabled())
 		{
 			selector->addItem(s->get_name(),
-                qVariantFromValue(s->get_index()));
+                QVariant::fromValue(s->get_index()));
             if (probe_iter != dec->channels().end()) {
                 if ((*probe_iter).second == s->get_index())
                     selector->setCurrentIndex(i + 1);

@@ -73,7 +73,7 @@ DsoSignal::DsoSignal(boost::shared_ptr<pv::device::DevInst> dev_inst,
     _auto_cnt(0),
     _hover_en(false),
     _hover_index(0),
-    _hover_point(QPointF(0, 0)),
+    _hover_point(QPointF(-1, -1)),
     _hover_value(0)
 {
     QVector<uint64_t> vValue;
@@ -120,7 +120,7 @@ boost::shared_ptr<pv::data::Dso> DsoSignal::dso_data() const
 
 void DsoSignal::set_scale(int height)
 {
-    _scale = height / (_ref_max - _ref_min);
+    _scale = height / (_ref_max - _ref_min) * _view->session().stop_scale();
 }
 
 float DsoSignal::get_scale()
@@ -216,8 +216,10 @@ bool DsoSignal::go_vDialPre(bool manul)
         _vDial->set_sel(_vDial->get_sel() - 1);
         _dev_inst->set_config(_probe, NULL, SR_CONF_PROBE_VDIV,
                               g_variant_new_uint64(_vDial->get_value()));
-        if (_view->session().get_capture_state() == SigSession::Stopped)
-            _scale *= pre_vdiv/_vDial->get_value();
+        if (_view->session().get_capture_state() == SigSession::Stopped) {
+            _view->session().set_stop_scale(_view->session().stop_scale() * (pre_vdiv/_vDial->get_value()));
+            set_scale(get_view_rect().height());
+        }
         _dev_inst->set_config(_probe, NULL, SR_CONF_PROBE_OFFSET,
                               g_variant_new_uint16(_zero_offset));
 
@@ -244,8 +246,10 @@ bool DsoSignal::go_vDialNext(bool manul)
         _vDial->set_sel(_vDial->get_sel() + 1);
         _dev_inst->set_config(_probe, NULL, SR_CONF_PROBE_VDIV,
                               g_variant_new_uint64(_vDial->get_value()));
-        if (_view->session().get_capture_state() == SigSession::Stopped)
-            _scale *= pre_vdiv/_vDial->get_value();
+        if (_view->session().get_capture_state() == SigSession::Stopped) {
+            _view->session().set_stop_scale(_view->session().stop_scale() * (pre_vdiv/_vDial->get_value()));
+            set_scale(get_view_rect().height());
+        }
         _dev_inst->set_config(_probe, NULL, SR_CONF_PROBE_OFFSET,
                               g_variant_new_uint16(_zero_offset));
 
@@ -283,7 +287,7 @@ bool DsoSignal::load_settings()
     } else {
         _bits = DefaultBits;
         qDebug("Warning: config_get SR_CONF_UNIT_BITS failed, set to %d(default).", DefaultBits);
-        if (strncmp(_dev_inst->name().toLocal8Bit(), "virtual", 7))
+        if (strncmp(_dev_inst->name().toUtf8().data(), "virtual", 7))
             return false;
     }
     gvar = _dev_inst->get_config(NULL, NULL, SR_CONF_REF_MIN);
@@ -357,7 +361,7 @@ bool DsoSignal::load_settings()
         g_variant_unref(gvar);
     } else {
         qDebug() << "ERROR: config_get SR_CONF_TRIGGER_VALUE failed.";
-        if (strncmp(_dev_inst->name().toLocal8Bit(), "virtual", 7))
+        if (strncmp(_dev_inst->name().toUtf8().data(), "virtual", 7))
             return false;
     }
 
@@ -565,6 +569,11 @@ bool DsoSignal::show() const
     return _show;
 }
 
+void DsoSignal::set_mValid(bool valid)
+{
+    _mValid = valid;
+}
+
 QString DsoSignal::get_measure(enum DSO_MEASURE_TYPE type)
 {
     const QString mNone = "--";
@@ -691,6 +700,58 @@ QRect DsoSignal::get_view_rect() const
                   _viewport->height() - UpMargin - DownMargin);
 }
 
+void DsoSignal::paint_prepare()
+{
+    assert(_view);
+
+    const deque< boost::shared_ptr<pv::data::DsoSnapshot> > &snapshots =
+        _data->get_snapshots();
+    if (snapshots.empty())
+        return;
+    const boost::shared_ptr<pv::data::DsoSnapshot> &snapshot =
+        snapshots.front();
+    if (snapshot->empty())
+        return;
+
+    if (!snapshot->has_data(get_index()))
+        return;
+
+    const uint16_t enabled_channels = snapshot->get_channel_num();
+    if (_view->session().trigd()) {
+        if (get_index() == _view->session().trigd_ch()) {
+            uint8_t slope = DSO_TRIGGER_RISING;
+            GVariant *gvar = _view->session().get_device()->get_config(NULL, NULL, SR_CONF_TRIGGER_SLOPE);
+            if (gvar != NULL) {
+                slope = g_variant_get_byte(gvar);
+                g_variant_unref(gvar);
+            }
+
+            int64_t trig_index = _view->get_trig_cursor()->index();
+            if (trig_index >= (int64_t)snapshot->get_sample_count())
+                return;
+            const uint8_t *const trig_samples = snapshot->get_samples(0, 0, get_index());
+            for (uint16_t i = 0; i < TrigHRng; i++) {
+                const int64_t i0 = (trig_index - i - 1)*enabled_channels;
+                const int64_t i1 = (trig_index - i)*enabled_channels;
+                if (i1 < 0)
+                    break;
+                const uint8_t t0 = trig_samples[i0];
+                const uint8_t t1 = trig_samples[i1];
+                if((slope == DSO_TRIGGER_RISING && t0 >= _trig_value && t1 <= _trig_value) ||
+                   (slope == DSO_TRIGGER_FALLING && t0 <= _trig_value && t1 >= _trig_value)) {
+                    const double xoff = (t1 == t0) ? 0 : (_trig_value - t0) * 1.0 / (t1 - t0);
+                    _view->set_trig_hoff(i + 1 - xoff);
+                    break;
+                }
+            }
+        }
+        //if (_view->trig_hoff() == 0 && trig_samples[3] != _trig_value)
+        //    _view->set_trig_hoff(0);
+    } else {
+        _view->set_trig_hoff(0);
+    }
+}
+
 void DsoSignal::paint_back(QPainter &p, int left, int right, QColor fore, QColor back)
 {
     assert(_view);
@@ -714,7 +775,7 @@ void DsoSignal::paint_back(QPainter &p, int left, int right, QColor fore, QColor
     fore.setAlpha(View::ForeAlpha);
     p.setPen(fore);
     const uint64_t sample_len = _view->session().cur_samplelimits();
-    const double samplerate = _view->session().cur_samplerate();
+    const double samplerate = _view->session().cur_snap_samplerate();
     const double samples_per_pixel = samplerate * _view->scale();
     const double shown_rate = min(samples_per_pixel * width * 1.0 / sample_len, 1.0);
     const double start = _view->offset() * samples_per_pixel;
@@ -777,13 +838,6 @@ void DsoSignal::paint_mid(QPainter &p, int left, int right, QColor fore, QColor 
     assert(_view);
     assert(right >= left);
 
-    {
-        if (_view->session().dso_feed()) {
-            _mValid = false;
-            _view->session().set_dso_feed(false);
-        }
-    }
-
     if (enabled()) {
         const int index = get_index();
         const int width = right - left;
@@ -809,10 +863,10 @@ void DsoSignal::paint_mid(QPainter &p, int left, int right, QColor fore, QColor 
         const double pixels_offset = offset;
         const double samplerate = _data->samplerate();
         //const double samplerate = _dev_inst->get_sample_rate();
-        //const double samplerate = _view->session().cur_samplerate();
+        //const double samplerate = _view->session().cur_snap_samplerate();
         const int64_t last_sample = max((int64_t)(snapshot->get_sample_count() - 1), (int64_t)0);
         const double samples_per_pixel = samplerate * scale;
-        const double start = offset * samples_per_pixel;
+        const double start = offset * samples_per_pixel - _view->trig_hoff();
         const double end = start + samples_per_pixel * width;
 
         const int64_t start_sample = min(max((int64_t)floor(start),
@@ -834,7 +888,7 @@ void DsoSignal::paint_mid(QPainter &p, int left, int right, QColor fore, QColor 
         }
 
         sr_status status;
-        if (sr_status_get(_dev_inst->dev_inst(), &status, false, 0, 0) == SR_OK) {
+        if (sr_status_get(_dev_inst->dev_inst(), &status, false) == SR_OK) {
             _mValid = true;
             if (status.measure_valid) {
                 _min = (index == 0) ? status.ch0_min : status.ch1_min;
@@ -993,20 +1047,26 @@ void DsoSignal::paint_trace(QPainter &p,
 
         float top = get_view_rect().top();
         float bottom = get_view_rect().bottom();
-        float x = (start / samples_per_pixel - pixels_offset) + left;
         double  pixels_per_sample = 1.0/samples_per_pixel;
+
         uint8_t value;
         int64_t sample_end = sample_count*num_channels;
+        float x = (start / samples_per_pixel - pixels_offset) + left + _view->trig_hoff()*pixels_per_sample;
         for (int64_t sample = 0; sample < sample_end; sample+=num_channels) {
             value = samples[sample];
             const float y = min(max(top, zeroY + (value - hw_offset) * _scale), bottom);
+            if (x > get_view_rect().right()) {
+                point--;
+                const float lastY = point->y() + (y - point->y()) / (x - point->x()) * (get_view_rect().right() - point->x());
+                point++;
+                *point++ = QPointF(get_view_rect().right(), lastY);
+                break;
+            }
             *point++ = QPointF(x, y);
             x += pixels_per_sample;
         }
 
         p.drawPolyline(points, point - points);
-        p.eraseRect(get_view_rect().right()+1, get_view_rect().top(),
-                    _view->viewport()->width() - get_view_rect().width(), get_view_rect().height());
 
         delete[] points;
     }
@@ -1039,7 +1099,7 @@ void DsoSignal::paint_envelope(QPainter &p,
     float bottom = get_view_rect().bottom();
     for(uint64_t sample = 0; sample < e.length-1; sample++) {
 		const float x = ((e.scale * sample + e.start) /
-			samples_per_pixel - pixels_offset) + left;
+            samples_per_pixel - pixels_offset) + left + _view->trig_hoff()/samples_per_pixel;
         const DsoSnapshot::EnvelopeSample *const s =
 			e.samples + sample;
 
@@ -1252,7 +1312,7 @@ void DsoSignal::paint_hover_measure(QPainter &p, QColor fore, QColor back)
 {
     const int hw_offset = get_hw_offset();
     // Hover measure
-    if (_hover_en) {
+    if (_hover_en && _hover_point != QPointF(-1, -1)) {
         QString hover_str = get_voltage(hw_offset - _hover_value, 2);
         const int hover_width = p.boundingRect(0, 0, INT_MAX, INT_MAX,
             Qt::AlignLeft | Qt::AlignTop, hover_str).width() + 10;
@@ -1276,6 +1336,10 @@ void DsoSignal::paint_hover_measure(QPainter &p, QColor fore, QColor back)
     while (i != _view->get_cursorList().end()) {
         float pt_value;
         const QPointF pt = get_point((*i)->index(), pt_value);
+        if (pt == QPointF(-1, -1)) {
+            i++;
+            continue;
+        }
         QString pt_str = get_voltage(hw_offset - pt_value, 2);
         const int pt_width = p.boundingRect(0, 0, INT_MAX, INT_MAX,
             Qt::AlignLeft | Qt::AlignTop, pt_str).width() + 10;
@@ -1395,6 +1459,7 @@ void DsoSignal::auto_start()
         _view->session().data_auto_lock(AutoLock);
         _autoV = true;
         _autoH = true;
+        _view->auto_trig(get_index());
         QTimer::singleShot(AutoTime, &_view->session(), SLOT(auto_end()));
     }
 }
@@ -1422,13 +1487,7 @@ bool DsoSignal::measure(const QPointF &p)
     if (snapshot->empty())
         return false;
 
-    const double scale = _view->scale();
-    assert(scale > 0);
-    const int64_t pixels_offset = _view->offset();
-    const double samplerate = _view->session().cur_samplerate();
-    const double samples_per_pixel = samplerate * scale;
-
-    _hover_index = floor((p.x() + pixels_offset) * samples_per_pixel+0.5);
+    _hover_index = _view->pixel2index(p.x());
     if (_hover_index >= snapshot->get_sample_count())
         return false;
 
@@ -1450,7 +1509,7 @@ bool DsoSignal::get_hover(uint64_t &index, QPointF &p, double &value)
 
 QPointF DsoSignal::get_point(uint64_t index, float &value)
 {
-    QPointF pt = QPointF(0, 0);
+    QPointF pt = QPointF(-1, -1);
 
     if (!enabled())
         return pt;
@@ -1465,12 +1524,6 @@ QPointF DsoSignal::get_point(uint64_t index, float &value)
     if (snapshot->empty())
         return pt;
 
-    const double scale = _view->scale();
-    assert(scale > 0);
-    const int64_t pixels_offset = _view->offset();
-    const double samplerate = _view->session().cur_samplerate();
-    const double samples_per_pixel = samplerate * scale;
-
     if (index >= snapshot->get_sample_count())
         return pt;
 
@@ -1478,7 +1531,7 @@ QPointF DsoSignal::get_point(uint64_t index, float &value)
     const float top = get_view_rect().top();
     const float bottom = get_view_rect().bottom();
     const int hw_offset = get_hw_offset();
-    const float x = (index / samples_per_pixel - pixels_offset);
+    const float x = _view->index2pixel(index);
     const float y = min(max(top, get_zero_vpos() + (value - hw_offset)* _scale), bottom);
     pt = QPointF(x, y);
 

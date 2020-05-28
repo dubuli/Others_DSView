@@ -57,16 +57,16 @@ Cursor::Cursor(View &view, QColor color, uint64_t index) :
 {
 }
 
-QRect Cursor::get_label_rect(const QRect &rect, bool &visible) const
+QRect Cursor::get_label_rect(const QRect &rect, bool &visible, bool has_hoff) const
 {
-    const double samples_per_pixel = _view.session().cur_samplerate() * _view.scale();
+    const double samples_per_pixel = _view.session().cur_snap_samplerate() * _view.scale();
     const double cur_offset = _index / samples_per_pixel;
     if (cur_offset < _view.offset() ||
         cur_offset > (_view.offset() + _view.width())) {
         visible = false;
         return QRect(-1, -1, 0, 0);
     }
-    const int64_t x = _index/samples_per_pixel - _view.offset();
+    const int64_t x = _view.index2pixel(_index, has_hoff);
 
     const QSize label_size(
 		_text_size.width() + View::LabelPadding.width() * 2,
@@ -85,7 +85,7 @@ QRect Cursor::get_close_rect(const QRect &rect) const
 }
 
 void Cursor::paint_label(QPainter &p, const QRect &rect,
-    unsigned int prefix, int index)
+    unsigned int prefix, int index, bool has_hoff)
 {
     assert(index > 0);
 
@@ -93,7 +93,7 @@ void Cursor::paint_label(QPainter &p, const QRect &rect,
     bool visible;
 
     compute_text_size(p, prefix);
-    const QRect r(get_label_rect(rect, visible));
+    const QRect r(get_label_rect(rect, visible, has_hoff));
     if (!visible)
         return;
     const QRect close(get_close_rect(r));
@@ -124,20 +124,20 @@ void Cursor::paint_label(QPainter &p, const QRect &rect,
     p.drawLine(close.left() + 2, close.bottom() - 2, close.right() - 2, close.top() + 2);
 
 	p.drawText(r, Qt::AlignCenter | Qt::AlignVCenter,
-        Ruler::format_real_time(_index, _view.session().cur_samplerate()));
+        Ruler::format_real_time(_index, _view.session().cur_snap_samplerate()));
 
     const QRect arrowRect = QRect(r.bottomLeft().x(), r.bottomLeft().y(), r.width(), ArrowSize);
     p.drawText(arrowRect, Qt::AlignCenter | Qt::AlignVCenter, QString::number(index));
 }
 
 void Cursor::paint_fix_label(QPainter &p, const QRect &rect,
-    unsigned int prefix, QChar label, QColor color)
+    unsigned int prefix, QChar label, QColor color, bool has_hoff)
 {
     using pv::view::Ruler;
     bool visible;
 
     compute_text_size(p, prefix);
-    const QRect r(get_label_rect(rect, visible));
+    const QRect r(get_label_rect(rect, visible, has_hoff));
     if (!visible)
         return;
 
@@ -153,8 +153,9 @@ void Cursor::paint_fix_label(QPainter &p, const QRect &rect,
     p.drawPolygon(points, countof(points));
 
     p.setPen(Qt::white);
-    p.drawText(r, Qt::AlignCenter | Qt::AlignVCenter,
-        Ruler::format_real_time(_index, _view.session().cur_samplerate()));
+    if (has_hoff)
+        p.drawText(r, Qt::AlignCenter | Qt::AlignVCenter,
+            Ruler::format_real_time(_index, _view.session().cur_snap_samplerate()));
 
     const QRect arrowRect = QRect(r.bottomLeft().x(), r.bottomLeft().y(), r.width(), ArrowSize);
     p.drawText(arrowRect, Qt::AlignCenter | Qt::AlignVCenter, label);
@@ -164,7 +165,7 @@ void Cursor::compute_text_size(QPainter &p, unsigned int prefix)
 {
     (void)prefix;
     _text_size = p.boundingRect(QRect(), 0,
-        Ruler::format_real_time(_index, _view.session().cur_samplerate())).size();
+        Ruler::format_real_time(_index, _view.session().cur_snap_samplerate())).size();
 }
 
 } // namespace view

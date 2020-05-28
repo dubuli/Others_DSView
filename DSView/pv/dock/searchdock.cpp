@@ -111,9 +111,9 @@ void SearchDock::reStyle()
 {
     QString iconPath = ":/icons/" + qApp->property("Style").toString();
 
-    _pre_button.setIcon(QIcon(iconPath+"/pre.png"));
-    _nxt_button.setIcon(QIcon(iconPath+"/next.png"));
-    _search_button->setIcon(QIcon(iconPath+"/search.png"));
+    _pre_button.setIcon(QIcon(iconPath+"/pre.svg"));
+    _nxt_button.setIcon(QIcon(iconPath+"/next.svg"));
+    _search_button->setIcon(QIcon(iconPath+"/search.svg"));
 }
 
 void SearchDock::paintEvent(QPaintEvent *)

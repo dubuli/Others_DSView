@@ -218,10 +218,11 @@ void MathTrace::paint_mid(QPainter &p, int left, int right, QColor fore, QColor 
         const int64_t offset = _view->offset();
 
         const double pixels_offset = offset;
-        const double samplerate = _view->session().cur_samplerate();
+        //const double samplerate = _view->session().cur_snap_samplerate();
+        const double samplerate = _math_stack->samplerate();
         const int64_t last_sample = max((int64_t)(_math_stack->get_sample_num() - 1), (int64_t)0);
         const double samples_per_pixel = samplerate * scale;
-        const double start = offset * samples_per_pixel;
+        const double start = offset * samples_per_pixel - _view->trig_hoff();
         const double end = start + samples_per_pixel * width;
 
         const int64_t start_sample = min(max((int64_t)floor(start),
@@ -286,18 +287,23 @@ void MathTrace::paint_trace(QPainter &p,
 
         double top = get_view_rect().top();
         double bottom = get_view_rect().bottom();
-        float x = (start / samples_per_pixel - pixels_offset) + left;
+        float x = (start / samples_per_pixel - pixels_offset) + left + _view->trig_hoff()/samples_per_pixel;
         double  pixels_per_sample = 1.0/samples_per_pixel;
 
         for (int64_t index = 0; index < sample_count; index++) {
-            *point++ = QPointF(x, min(max(top, zeroY - (values[index] * _scale)), bottom));
+            const float y = min(max(top, zeroY - (values[index] * _scale)), bottom);
+            if (x > get_view_rect().right()) {
+                point--;
+                const float lastY = point->y() + (y - point->y()) / (x - point->x()) * (get_view_rect().right() - point->x());
+                point++;
+                *point++ = QPointF(get_view_rect().right(), lastY);
+                break;
+            }
+            *point++ = QPointF(x, y);
             x += pixels_per_sample;
         }
 
         p.drawPolyline(points, point - points);
-        p.eraseRect(get_view_rect().right()+1, get_view_rect().top(),
-                    _view->viewport()->width() - get_view_rect().width(), get_view_rect().height());
-
         delete[] points;
     }
 }
@@ -325,7 +331,7 @@ void MathTrace::paint_envelope(QPainter &p,
     double bottom = get_view_rect().bottom();
     for(uint64_t sample = 0; sample < e.length-1; sample++) {
 		const float x = ((e.scale * sample + e.start) /
-			samples_per_pixel - pixels_offset) + left;
+            samples_per_pixel - pixels_offset) + left + _view->trig_hoff()/samples_per_pixel;
         const data::MathStack::EnvelopeSample *const s =
 			e.samples + sample;
 
@@ -457,13 +463,7 @@ bool MathTrace::measure(const QPointF &p)
     if (!window.contains(p))
         return false;
 
-    const double scale = _view->scale();
-    assert(scale > 0);
-    const int64_t pixels_offset = _view->offset();
-    const double samplerate = _view->session().cur_samplerate();
-    const double samples_per_pixel = samplerate * scale;
-
-    _hover_index = floor((p.x() + pixels_offset) * samples_per_pixel+0.5);
+    _hover_index = _view->pixel2index(p.x());
     if (_hover_index >= _math_stack->get_sample_num())
         return false;
 
@@ -476,16 +476,10 @@ QPointF MathTrace::get_point(uint64_t index, float &value)
 {
     QPointF pt = QPointF(0, 0);
 
-    const double scale = _view->scale();
-    assert(scale > 0);
-    const int64_t pixels_offset = _view->offset();
-    const double samplerate = _view->session().cur_samplerate();
-    const double samples_per_pixel = samplerate * scale;
-
     const float top = get_view_rect().top();
     const float bottom = get_view_rect().bottom();
     const float zeroP = _zero_vrate * get_view_rect().height() + top;
-    const float x = (index / samples_per_pixel - pixels_offset);
+    const float x = _view->index2pixel(index);
 
     value = *_math_stack->get_math(index);
     float y = min(max(top, zeroP - (value * _scale)), bottom);

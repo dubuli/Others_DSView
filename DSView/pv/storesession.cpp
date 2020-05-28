@@ -65,13 +65,19 @@ StoreSession::StoreSession(SigSession &session) :
     _outModule(NULL),
 	_units_stored(0),
     _unit_count(0),
-    _has_error(false)
+    _has_error(false),
+    _canceled(false)
 {
 }
 
 StoreSession::~StoreSession()
 {
 	wait();
+}
+
+SigSession& StoreSession::session()
+{
+    return _session;
 }
 
 pair<uint64_t, uint64_t> StoreSession::progress() const
@@ -94,6 +100,7 @@ void StoreSession::wait()
 
 void StoreSession::cancel()
 {
+    _canceled = true;
     _thread.interrupt();
 }
 
@@ -143,10 +150,20 @@ bool StoreSession::save_start(QString session_file)
 
     const QString DIR_KEY("SavePath");
     QSettings settings(QApplication::organizationName(), QApplication::applicationName());
+    QString default_name = settings.value(DIR_KEY).toString() + "/" + _session.get_device()->name() + "-";
+    for (const GSList *l = _session.get_device()->get_dev_mode_list();
+         l; l = l->next) {
+        const sr_dev_mode *mode = (const sr_dev_mode *)l->data;
+        if (_session.get_device()->dev_inst()->mode == mode->mode) {
+            default_name += mode->acronym;
+            break;
+        }
+    }
+    default_name += _session.get_session_time().toString("-yyMMdd-hhmmss");
 
     // Show the dialog
     _file_name = QFileDialog::getSaveFileName(
-                    NULL, tr("Save File"), settings.value(DIR_KEY).toString(),
+                    NULL, tr("Save File"), default_name,
                     tr("DSView Data (*.dsl)"));
 
     if (!_file_name.isEmpty()) {
@@ -154,7 +171,7 @@ bool StoreSession::save_start(QString session_file)
         if(f.suffix().compare("dsl"))
             _file_name.append(tr(".dsl"));
         QDir CurrentDir;
-        settings.setValue(DIR_KEY, CurrentDir.absoluteFilePath(_file_name));
+        settings.setValue(DIR_KEY, CurrentDir.filePath(_file_name));
 
         QString meta_file = meta_gen(snapshot);
     #ifdef ENABLE_DECODE
@@ -164,15 +181,13 @@ bool StoreSession::save_start(QString session_file)
     #endif
         if (meta_file == NULL) {
             _error = tr("Generate temp file failed.");
-            return false;
         } else {
-            int ret = sr_session_save_init(_file_name.toLocal8Bit().data(),
-                                 meta_file.toLocal8Bit().data(),
-                                 decoders_file.toLocal8Bit().data(),
-                                 session_file.toLocal8Bit().data());
+            int ret = sr_session_save_init(_file_name.toUtf8().data(),
+                                 meta_file.toUtf8().data(),
+                                 decoders_file.toUtf8().data(),
+                                 session_file.toUtf8().data());
             if (ret != SR_OK) {
-                _error = tr("Failed to create zip file. Please check write permission of this path.");
-                return false;
+                _error = tr("Failed to create zip file. Initialization error.");
             } else {
                 _thread = boost::thread(&StoreSession::save_proc, this, snapshot);
                 return !_has_error;
@@ -180,7 +195,8 @@ bool StoreSession::save_start(QString session_file)
         }
     }
 
-    _error.clear();
+    QFile::remove(_file_name);
+    //_error.clear();
     return false;
 }
 
@@ -189,6 +205,7 @@ void StoreSession::save_proc(shared_ptr<data::Snapshot> snapshot)
 	assert(snapshot);
 
     int ret = SR_ERR;
+    int num = 0;
     shared_ptr<data::LogicSnapshot> logic_snapshot;
     shared_ptr<data::AnalogSnapshot> analog_snapshot;
     shared_ptr<data::DsoSnapshot> dso_snapshot;
@@ -200,7 +217,7 @@ void StoreSession::save_proc(shared_ptr<data::Snapshot> snapshot)
                 to_save_probes++;
         }
         _unit_count = logic_snapshot->get_sample_count() / 8 * to_save_probes;
-        int num = logic_snapshot->get_block_num();
+        num = logic_snapshot->get_block_num();
         bool sample;
 
         BOOST_FOREACH(const boost::shared_ptr<view::Signal> s, _session.get_signals()) {
@@ -222,7 +239,7 @@ void StoreSession::save_proc(shared_ptr<data::Snapshot> snapshot)
                             memset(buf, sample ? 0xff : 0x0, size);
                         }
                     }
-                    ret = sr_session_append(_file_name.toLocal8Bit().data(), buf, size,
+                    ret = sr_session_append(_file_name.toUtf8().data(), buf, size,
                                       i, ch_index, ch_type, File_Version);
                     if (ret != SR_OK) {
                         if (!_has_error) {
@@ -230,6 +247,8 @@ void StoreSession::save_proc(shared_ptr<data::Snapshot> snapshot)
                             _error = tr("Failed to create zip file. Please check write permission of this path.");
                         }
                         progress_updated();
+                        if (_has_error)
+                            QFile::remove(_file_name);
                         return;
                     }
                     _units_stored += size;
@@ -246,7 +265,7 @@ void StoreSession::save_proc(shared_ptr<data::Snapshot> snapshot)
             break;
         }
         if (ch_type != -1) {
-            const int num = snapshot->get_block_num();
+            num = snapshot->get_block_num();
             _unit_count = snapshot->get_sample_count() *
                           snapshot->get_unit_bytes() *
                           snapshot->get_channel_num();
@@ -266,13 +285,13 @@ void StoreSession::save_proc(shared_ptr<data::Snapshot> snapshot)
                         memcpy(tmp, buf, buf_end-buf);
                         memcpy(tmp+(buf_end-buf), buf_start, buf+size-buf_end);
                     }
-                    ret = sr_session_append(_file_name.toLocal8Bit().data(), tmp, size,
+                    ret = sr_session_append(_file_name.toUtf8().data(), tmp, size,
                                       i, 0, ch_type, File_Version);
                     buf += (size - _unit_count);
                     if (tmp)
                         free(tmp);
                 } else {
-                    ret = sr_session_append(_file_name.toLocal8Bit().data(), buf, size,
+                    ret = sr_session_append(_file_name.toUtf8().data(), buf, size,
                                       i, 0, ch_type, File_Version);
                     buf += size;
                 }
@@ -282,6 +301,8 @@ void StoreSession::save_proc(shared_ptr<data::Snapshot> snapshot)
                         _error = tr("Failed to create zip file. Please check write permission of this path.");
                     }
                     progress_updated();
+                    if (_has_error)
+                        QFile::remove(_file_name);
                     return;
                 }
                 _units_stored += size;
@@ -290,6 +311,9 @@ void StoreSession::save_proc(shared_ptr<data::Snapshot> snapshot)
         }
     }
 	progress_updated();
+
+    if (_canceled || num == 0)
+        QFile::remove(_file_name);
 }
 
 QString StoreSession::meta_gen(boost::shared_ptr<data::Snapshot> snapshot)
@@ -318,7 +342,7 @@ QString StoreSession::meta_gen(boost::shared_ptr<data::Snapshot> snapshot)
     }
 
     const sr_dev_inst *sdi = _session.get_device()->dev_inst();
-    meta = fopen(metafile.toLocal8Bit().data(), "wb");
+    meta = fopen(metafile.toUtf8().data(), "wb");
     if (meta == NULL) {
         qDebug() << "Failed to create temp meta file.";
         return NULL;
@@ -355,7 +379,7 @@ QString StoreSession::meta_gen(boost::shared_ptr<data::Snapshot> snapshot)
         fprintf(meta, "total blocks = %d\n", logic_snapshot->get_block_num());
     }
 
-    s = sr_samplerate_string(_session.cur_samplerate());
+    s = sr_samplerate_string(_session.cur_snap_samplerate());
     fprintf(meta, "samplerate = %s\n", s);
 
     if (sdi->mode == DSO) {
@@ -363,6 +387,18 @@ QString StoreSession::meta_gen(boost::shared_ptr<data::Snapshot> snapshot)
         if (gvar != NULL) {
             uint64_t tmp_u64 = g_variant_get_uint64(gvar);
             fprintf(meta, "hDiv = %" PRIu64 "\n", tmp_u64);
+            g_variant_unref(gvar);
+        }
+        gvar = _session.get_device()->get_config(NULL, NULL, SR_CONF_MAX_TIMEBASE);
+        if (gvar != NULL) {
+            uint64_t tmp_u64 = g_variant_get_uint64(gvar);
+            fprintf(meta, "hDiv max = %" PRIu64 "\n", tmp_u64);
+            g_variant_unref(gvar);
+        }
+        gvar = _session.get_device()->get_config(NULL, NULL, SR_CONF_MIN_TIMEBASE);
+        if (gvar != NULL) {
+            uint64_t tmp_u64 = g_variant_get_uint64(gvar);
+            fprintf(meta, "hDiv min = %" PRIu64 "\n", tmp_u64);
             g_variant_unref(gvar);
         }
         gvar = _session.get_device()->get_config(NULL, NULL, SR_CONF_UNIT_BITS);
@@ -384,7 +420,7 @@ QString StoreSession::meta_gen(boost::shared_ptr<data::Snapshot> snapshot)
             g_variant_unref(gvar);
         }
     } else if (sdi->mode == LOGIC) {
-        fprintf(meta, "trigger time = %lld\n", _session.get_trigger_time().toMSecsSinceEpoch());
+        fprintf(meta, "trigger time = %lld\n", _session.get_session_time().toMSecsSinceEpoch());
     } else if (sdi->mode == ANALOG) {
         shared_ptr<data::AnalogSnapshot> analog_snapshot;
         if ((analog_snapshot = dynamic_pointer_cast<data::AnalogSnapshot>(snapshot))) {
@@ -424,7 +460,7 @@ QString StoreSession::meta_gen(boost::shared_ptr<data::Snapshot> snapshot)
                 fprintf(meta, " vFactor%d = %" PRIu64 "\n", probecnt, probe->vfactor);
                 fprintf(meta, " vOffset%d = %d\n", probecnt, probe->hw_offset);
                 fprintf(meta, " vTrig%d = %d\n", probecnt, probe->trig_value);
-                if (sr_status_get(sdi, &status, false, 0, 0) == SR_OK) {
+                if (sr_status_get(sdi, &status, false) == SR_OK) {
                     if (probe->index == 0) {
                         fprintf(meta, " period%d = %" PRIu32 "\n", probecnt, status.ch0_cyc_tlen);
                         fprintf(meta, " pcnt%d = %" PRIu32 "\n", probecnt, status.ch0_cyc_cnt);
@@ -502,6 +538,16 @@ bool StoreSession::export_start()
 
     const QString DIR_KEY("ExportPath");
     QSettings settings(QApplication::organizationName(), QApplication::applicationName());
+    QString default_name = settings.value(DIR_KEY).toString() + "/" + _session.get_device()->name() + "-";
+    for (const GSList *l = _session.get_device()->get_dev_mode_list();
+         l; l = l->next) {
+        const sr_dev_mode *mode = (const sr_dev_mode *)l->data;
+        if (_session.get_device()->dev_inst()->mode == mode->mode) {
+            default_name += mode->acronym;
+            break;
+        }
+    }
+    default_name += _session.get_session_time().toString("-yyMMdd-hhmmss");
 
     // Show the dialog
     QList<QString> supportedFormats = getSuportedExportFormats();
@@ -512,7 +558,7 @@ bool StoreSession::export_start()
             filter.append(";;");
     }
     _file_name = QFileDialog::getSaveFileName(
-                NULL, tr("Export Data"), settings.value(DIR_KEY).toString(),filter,&filter);
+                NULL, tr("Export Data"), default_name,filter,&filter);
     if (!_file_name.isEmpty()) {
         QFileInfo f(_file_name);
         QStringList list = filter.split('.').last().split(')');
@@ -520,13 +566,13 @@ bool StoreSession::export_start()
         if(f.suffix().compare(_suffix))
             _file_name += tr(".") + _suffix;
         QDir CurrentDir;
-        settings.setValue(DIR_KEY, CurrentDir.absoluteFilePath(_file_name));
+        settings.setValue(DIR_KEY, CurrentDir.filePath(_file_name));
 
         const struct sr_output_module** supportedModules = sr_output_list();
         while(*supportedModules){
             if(*supportedModules == NULL)
                 break;
-            if(!strcmp((*supportedModules)->id, _suffix.toLocal8Bit().data())){
+            if(!strcmp((*supportedModules)->id, _suffix.toUtf8().data())){
                 _outModule = *supportedModules;
                 break;
             }
@@ -567,7 +613,7 @@ void StoreSession::export_proc(shared_ptr<data::Snapshot> snapshot)
     }
 
     GHashTable *params = g_hash_table_new(g_str_hash, g_str_equal);
-    GVariant* filenameGVariant = g_variant_new_bytestring(_file_name.toLocal8Bit().data());
+    GVariant* filenameGVariant = g_variant_new_bytestring(_file_name.toUtf8().data());
     g_hash_table_insert(params, (char*)"filename", filenameGVariant);
     GVariant* typeGVariant = g_variant_new_int16(channel_type);
     g_hash_table_insert(params, (char*)"type", typeGVariant);
@@ -590,7 +636,7 @@ void StoreSession::export_proc(shared_ptr<data::Snapshot> snapshot)
     struct sr_datafeed_meta meta;
     struct sr_config *src;
     src = sr_config_new(SR_CONF_SAMPLERATE,
-            g_variant_new_uint64(_session.cur_samplerate()));
+            g_variant_new_uint64(_session.cur_snap_samplerate()));
     meta.config = g_slist_append(NULL, src);
     src = sr_config_new(SR_CONF_LIMIT_SAMPLES,
             g_variant_new_uint64(snapshot->get_sample_count()));
@@ -953,7 +999,7 @@ void StoreSession::load_decoders(dock::ProtocolDock *widget, QJsonArray dec_arra
                             else if (g_variant_type_equal(type, G_VARIANT_TYPE_UINT64))
                                 new_value = g_variant_new_uint64(options_obj[opt->id].toInt());
                         } else if (g_variant_is_of_type(opt->def, G_VARIANT_TYPE("s"))) {
-                            new_value = g_variant_new_string(options_obj[opt->id].toString().toLocal8Bit().data());
+                            new_value = g_variant_new_string(options_obj[opt->id].toString().toUtf8().data());
                         }
 
                         if (new_value != NULL)

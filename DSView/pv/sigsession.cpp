@@ -105,7 +105,7 @@ SigSession::SigSession(DeviceManager &device_manager) :
     _hot_detach = false;
     _group_cnt = 0;
 	register_hotplug_callback();
-    _view_timer.stop();
+    _feed_timer.stop();
     _noData_cnt = 0;
     _data_lock = false;
     _data_updated = false;
@@ -114,7 +114,9 @@ SigSession::SigSession(DeviceManager &device_manager) :
     #endif
     _lissajous_trace = NULL;
     _math_trace = NULL;
+    _saving = false;
     _dso_feed = false;
+    _stop_scale = 1;
 
     // Create snapshots & data containers
     _cur_logic_snapshot.reset(new data::LogicSnapshot());
@@ -129,7 +131,7 @@ SigSession::SigSession(DeviceManager &device_manager) :
     _group_data.reset(new data::Group());
     _group_cnt = 0;
 
-    connect(&_view_timer, SIGNAL(timeout()), this, SLOT(check_update()));
+    connect(&_feed_timer, SIGNAL(timeout()), this, SLOT(feed_timeout()));
 }
 
 SigSession::~SigSession()
@@ -175,7 +177,7 @@ void SigSession::set_device(boost::shared_ptr<device::DevInst> dev_inst)
     if (_dev_inst) {
         try {
             _dev_inst->use(this);
-            _cur_samplerate = _dev_inst->get_sample_rate();
+            _cur_snap_samplerate = _dev_inst->get_sample_rate();
             _cur_samplelimits = _dev_inst->get_sample_limit();
 
             if (_dev_inst->dev_inst()->mode == DSO)
@@ -274,43 +276,63 @@ uint64_t SigSession::cur_samplelimits() const
 
 uint64_t SigSession::cur_samplerate() const
 {
-    return _cur_samplerate;
+    // samplerate for current viewport
+    if (_dev_inst->dev_inst()->mode == DSO)
+        return _dev_inst->get_sample_rate();
+    else
+        return cur_snap_samplerate();
+}
+
+uint64_t SigSession::cur_snap_samplerate() const
+{
+    // samplerate for current snapshot
+    return _cur_snap_samplerate;
 }
 
 double SigSession::cur_sampletime() const
 {
-    if (_cur_samplerate == 0)
-        return 0;
-    else
-        return  cur_samplelimits() * 1.0 / cur_samplerate();
+    return  cur_samplelimits() * 1.0 / cur_samplerate();
 }
 
-void SigSession::set_cur_samplerate(uint64_t samplerate)
+double SigSession::cur_snap_sampletime() const
+{
+    return  cur_samplelimits() * 1.0 / cur_snap_samplerate();
+}
+
+double SigSession::cur_view_time() const
+{
+    return _dev_inst->get_time_base() * DS_CONF_DSO_HDIVS * 1.0 / SR_SEC(1);
+}
+
+void SigSession::set_cur_snap_samplerate(uint64_t samplerate)
 {
     assert(samplerate != 0);
-    _cur_samplerate = samplerate;
+    _cur_snap_samplerate = samplerate;
     // sample rate for all SignalData
     // Logic/Analog/Dso
     if (_logic_data)
-        _logic_data->set_samplerate(_cur_samplerate);
+        _logic_data->set_samplerate(_cur_snap_samplerate);
     if (_analog_data)
-        _analog_data->set_samplerate(_cur_samplerate);
-//    if (_dso_data)
-//        _dso_data->set_samplerate(_cur_samplerate);
+        _analog_data->set_samplerate(_cur_snap_samplerate);
+    if (_dso_data)
+        _dso_data->set_samplerate(_cur_snap_samplerate);
     // Group
     if (_group_data)
-        _group_data->set_samplerate(_cur_samplerate);
+        _group_data->set_samplerate(_cur_snap_samplerate);
 
 #ifdef ENABLE_DECODE
     // DecoderStack
     BOOST_FOREACH(const boost::shared_ptr<view::DecodeTrace> d, _decode_traces)
-        d->decoder()->set_samplerate(_cur_samplerate);
+        d->decoder()->set_samplerate(_cur_snap_samplerate);
 #endif
+    // Math
+    if (_math_trace && _math_trace->enabled())
+        _math_trace->get_math_stack()->set_samplerate(_dev_inst->get_sample_rate());
     // SpectrumStack
     BOOST_FOREACH(const boost::shared_ptr<view::SpectrumTrace> m, _spectrum_traces)
-        m->get_spectrum_stack()->set_samplerate(_cur_samplerate);
+        m->get_spectrum_stack()->set_samplerate(_cur_snap_samplerate);
 
-    cur_samplerate_changed();
+    cur_snap_samplerate_changed();
 }
 
 void SigSession::set_cur_samplelimits(uint64_t samplelimits)
@@ -328,15 +350,18 @@ void SigSession::capture_init()
     _dev_inst->set_config(NULL, NULL, SR_CONF_INSTANT, g_variant_new_boolean(_instant));
     update_capture();
 
-    set_cur_samplerate(_dev_inst->get_sample_rate());
+    set_cur_snap_samplerate(_dev_inst->get_sample_rate());
     set_cur_samplelimits(_dev_inst->get_sample_limit());
+    set_stop_scale(1);
     _data_updated = false;
     _trigger_flag = false;
+    _trigger_ch = 0;
     _hw_replied = false;
     if (_dev_inst->dev_inst()->mode != LOGIC)
-        _view_timer.start(ViewTime);
+        _feed_timer.start(FeedInterval);
     else
-        _view_timer.stop();
+        _feed_timer.stop();
+
     _noData_cnt = 0;
     data_unlock();
 
@@ -419,6 +444,14 @@ void SigSession::start_capture(bool instant,
 
     // stop previous capture
 	stop_capture();
+    // reset measure of dso signal
+    BOOST_FOREACH(const boost::shared_ptr<view::Signal> s, _signals)
+    {
+        assert(s);
+        boost::shared_ptr<view::DsoSignal> dsoSig;
+        if ((dsoSig = dynamic_pointer_cast<view::DsoSignal>(s)))
+            dsoSig->set_mValid(false);
+    }
 
     // update setting
     if (_dev_inst->name() != "virtual-session")
@@ -474,7 +507,7 @@ bool SigSession::get_capture_status(bool &triggered, int &progress)
 {
     uint64_t sample_limits = cur_samplelimits();
     sr_status status;
-    if (sr_status_get(_dev_inst->dev_inst(), &status, true, SR_STATUS_TRIG_BEGIN, SR_STATUS_TRIG_END) == SR_OK){
+    if (sr_status_get(_dev_inst->dev_inst(), &status, true) == SR_OK){
         triggered = status.trig_hit & 0x01;
         uint64_t captured_cnt = status.trig_hit >> 2;
         captured_cnt = ((uint64_t)status.captured_cnt0 +
@@ -559,7 +592,8 @@ void SigSession::sample_thread_proc(boost::shared_ptr<device::DevInst> dev_inst,
 
 void SigSession::check_update()
 {
-    data_unlock();
+    boost::lock_guard<boost::mutex> lock(_data_mutex);
+
     if (_capture_state != Running)
         return;
 
@@ -569,7 +603,7 @@ void SigSession::check_update()
         _noData_cnt = 0;
         data_auto_unlock();
     } else {
-        if (++_noData_cnt >= (WaitShowTime/ViewTime))
+        if (++_noData_cnt >= (WaitShowTime/FeedInterval))
             nodata_timeout();
     }
 }
@@ -590,7 +624,7 @@ void SigSession::add_group()
 //        if (_group_data->get_snapshots().empty())
 //            _group_data->set_samplerate(_dev_inst->get_sample_rate());
         _group_data->init();
-        _group_data->set_samplerate(_cur_samplerate);
+        _group_data->set_samplerate(_cur_snap_samplerate);
         const boost::shared_ptr<view::GroupSignal> signal(
                     new view::GroupSignal("New Group",
                                           _group_data, probe_index_list, _group_cnt));
@@ -851,7 +885,7 @@ void SigSession::refresh(int holdtime)
         //_cur_analog_snapshot.reset();
     }
 
-    QTimer::singleShot(holdtime, this, SLOT(data_unlock()));
+    QTimer::singleShot(holdtime, this, SLOT(feed_timeout()));
     //data_updated();
     _data_updated = true;
 }
@@ -1007,10 +1041,23 @@ void SigSession::feed_in_dso(const sr_datafeed_dso &dso)
         _cur_dso_snapshot->append_payload(dso);
     }
 
+    BOOST_FOREACH(const boost::shared_ptr<view::Signal> s, _signals) {
+        boost::shared_ptr<view::DsoSignal> dsoSig;
+        if ((dsoSig = dynamic_pointer_cast<view::DsoSignal>(s)) && (dsoSig->enabled()))
+            dsoSig->paint_prepare();
+    }
+
     if (dso.num_samples != 0) {
-        if (_dso_data)
-            _dso_data->set_samplerate(_dev_inst->get_sample_rate());
-        set_dso_feed(true);
+        // update current sample rate
+        set_cur_snap_samplerate(_dev_inst->get_sample_rate());
+//        // reset measure of dso signal
+//        BOOST_FOREACH(const boost::shared_ptr<view::Signal> s, _signals)
+//        {
+//            assert(s);
+//            boost::shared_ptr<view::DsoSignal> dsoSig;
+//            if ((dsoSig = dynamic_pointer_cast<view::DsoSignal>(s)))
+//                dsoSig->set_mValid(false);
+//        }
     }
 
     if (_cur_dso_snapshot->memory_failed()) {
@@ -1034,8 +1081,9 @@ void SigSession::feed_in_dso(const sr_datafeed_dso &dso)
     }
 
     _trigger_flag = dso.trig_flag;
+    _trigger_ch = dso.trig_ch;
     receive_data(dso.num_samples);
-    //data_updated();
+
     if (!_instant)
         data_lock();
     _data_updated = true;
@@ -1166,6 +1214,8 @@ void SigSession::data_feed_in(const struct sr_dev_inst *sdi,
             session_error();
         }
         frame_ended();
+        if (get_device()->dev_inst()->mode != LOGIC)
+            set_session_time(QDateTime::currentDateTime());
 		break;
 	}
 	}
@@ -1356,7 +1406,7 @@ bool SigSession::add_decoder(srd_decoder *const dec, bool silent)
             _decode_traces.push_back(d);
             ret = true;
         }
-    } catch(std::runtime_error e) {
+    } catch(const std::runtime_error &e) {
         return false;
     }
 
@@ -1517,6 +1567,7 @@ void SigSession::math_rebuild(bool enable,
         new data::MathStack(*this, dsoSig1, dsoSig2, type));
     _math_trace.reset(new view::MathTrace(enable, math_stack, dsoSig1, dsoSig2));
     if (_math_trace && _math_trace->enabled()) {
+        _math_trace->get_math_stack()->set_samplerate(_dev_inst->get_sample_rate());
         _math_trace->get_math_stack()->realloc(_dev_inst->get_sample_limit());
         _math_trace->get_math_stack()->calc_math();
     }
@@ -1535,14 +1586,14 @@ boost::shared_ptr<view::MathTrace> SigSession::get_math_trace()
     return _math_trace;
 }
 
-void SigSession::set_trigger_time(QDateTime time)
+void SigSession::set_session_time(QDateTime time)
 {
-    _trigger_time = time;
+    _session_time = time;
 }
 
-QDateTime SigSession::get_trigger_time() const
+QDateTime SigSession::get_session_time() const
 {
-    return _trigger_time;
+    return _session_time;
 }
 
 uint64_t  SigSession::get_trigger_pos() const
@@ -1555,6 +1606,11 @@ bool SigSession::trigd() const
     return _trigger_flag;
 }
 
+uint8_t SigSession::trigd_ch() const
+{
+    return _trigger_ch;
+}
+
 void SigSession::nodata_timeout()
 {
     GVariant *gvar = _dev_inst->get_config(NULL, NULL, SR_CONF_TRIGGER_SOURCE);
@@ -1562,6 +1618,15 @@ void SigSession::nodata_timeout()
         return;
     if (g_variant_get_byte(gvar) != DSO_TRIGGER_AUTO) {
         show_wait_trigger();
+    }
+}
+
+void SigSession::feed_timeout()
+{
+    data_unlock();
+    if (!_data_updated) {
+        if (++_noData_cnt >= (WaitShowTime/FeedInterval))
+            nodata_timeout();
     }
 }
 
@@ -1708,14 +1773,41 @@ uint64_t SigSession::get_save_end() const
     return _save_end;
 }
 
-bool SigSession::dso_feed() const
+bool SigSession::get_saving() const
 {
-    return _dso_feed;
+    return _saving;
 }
 
-void SigSession::set_dso_feed(bool feed)
+void SigSession::set_saving(bool saving)
 {
-    _dso_feed = feed;
+    _saving = saving;
+}
+
+void SigSession::exit_capture()
+{
+    set_repeating(false);
+    bool wait_upload = false;
+    if (get_run_mode() != SigSession::Repetitive) {
+        GVariant *gvar = _dev_inst->get_config(NULL, NULL, SR_CONF_WAIT_UPLOAD);
+        if (gvar != NULL) {
+            wait_upload = g_variant_get_boolean(gvar);
+            g_variant_unref(gvar);
+        }
+    }
+    if (!wait_upload) {
+        stop_capture();
+        capture_state_changed(SigSession::Stopped);
+    }
+}
+
+float SigSession::stop_scale() const
+{
+    return _stop_scale;
+}
+
+void SigSession::set_stop_scale(float scale)
+{
+    _stop_scale = scale;
 }
 
 } // namespace pv

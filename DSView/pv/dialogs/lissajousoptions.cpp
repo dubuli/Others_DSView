@@ -51,13 +51,13 @@ LissajousOptions::LissajousOptions(SigSession &session, QWidget *parent) :
     _enable = new QCheckBox(this);
 
     QLabel *lisa_label = new QLabel(this);
-    lisa_label->setPixmap(QPixmap(":/icons/lissajous.png"));
+    lisa_label->setPixmap(QPixmap(":/icons/lissajous.svg"));
 
     _percent = new QSlider(Qt::Horizontal, this);
     _percent->setRange(100, 100);
     _percent->setEnabled(false);
     if (_session.cur_samplelimits() > WellLen) {
-        int min = WellLen*100.0/_session.cur_samplelimits();
+        int min = ceil(WellLen*100.0/_session.cur_samplelimits());
         _percent->setEnabled(true);
         _percent->setRange(min, 100);
         _percent->setValue(min);

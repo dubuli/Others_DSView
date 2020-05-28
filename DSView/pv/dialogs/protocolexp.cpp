@@ -121,8 +121,12 @@ void ProtocolExp::accept()
         const QString DIR_KEY("ProtocolExportPath");
         QSettings settings(QApplication::organizationName(), QApplication::applicationName());
         QString default_filter = _format_combobox->currentText();
+
+        QString default_name = settings.value(DIR_KEY).toString() + "/" + "decoder-";
+        default_name += _session.get_session_time().toString("-yyMMdd-hhmmss");
+
         QString file_name = QFileDialog::getSaveFileName(
-                    this, tr("Export Data"), settings.value(DIR_KEY).toString(),filter,&default_filter);
+                    this, tr("Export Data"), default_name,filter,&default_filter);
         if (!file_name.isEmpty()) {
             QFileInfo f(file_name);
             QStringList list = default_filter.split('.').last().split(')');
@@ -131,7 +135,7 @@ void ProtocolExp::accept()
                 file_name+=tr(".")+ext;
 
             QDir CurrentDir;
-            settings.setValue(DIR_KEY, CurrentDir.absoluteFilePath(file_name));
+            settings.setValue(DIR_KEY, CurrentDir.filePath(file_name));
 
             QFile file(file_name);
             file.open(QIODevice::WriteOnly | QIODevice::Text);
@@ -153,8 +157,8 @@ void ProtocolExp::accept()
                     }
                 }
                 out << QString("%1,%2,%3\n")
-                       .arg("ID")
-                       .arg("Time[s]")
+                       .arg("Id")
+                       .arg("Time[ns]")
                        .arg(title);
 
                 pv::data::DecoderModel* decoder_model = _session.get_decoder_model();
@@ -174,7 +178,7 @@ void ProtocolExp::accept()
                 }
 
                 uint64_t exported = 0;
-                double time_pre_samples = 1.0 / decoder_stack->samplerate();
+                double ns_per_sample = SR_SEC(1) * 1.0 / decoder_stack->samplerate();
                 vector<Annotation> annotations;
                 decoder_stack->get_annotation_subset(annotations, row,
                     0, decoder_stack->sample_count()-1);
@@ -182,7 +186,7 @@ void ProtocolExp::accept()
                     BOOST_FOREACH(const Annotation &a, annotations) {
                         out << QString("%1,%2,%3\n")
                                .arg(QString::number(exported))
-                               .arg(QString::number(a.start_sample()*time_pre_samples))
+                               .arg(QString::number(a.start_sample()*ns_per_sample, 'f', 20))
                                .arg(a.annotations().at(0));
                         exported++;
                         emit  export_progress(exported*100/annotations.size());

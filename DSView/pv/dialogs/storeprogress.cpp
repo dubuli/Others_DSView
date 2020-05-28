@@ -21,6 +21,7 @@
 
 #include "storeprogress.h"
 #include "dsmessagebox.h"
+#include "pv/sigsession.h"
 
 #include "QVBoxLayout"
 
@@ -59,15 +60,19 @@ void StoreProgress::reject()
 {
     using namespace Qt;
     _store_session.cancel();
+    save_done();
     QDialog::reject();
 }
 
 void StoreProgress::timeout()
 {
-    if (_done)
+    if (_done) {
+        _store_session.session().set_saving(false);
+        save_done();
         close();
-    else
+    } else {
         QTimer::singleShot(100, this, SLOT(timeout()));
+    }
 }
 
 void StoreProgress::save_run(QString session_file)
@@ -76,7 +81,7 @@ void StoreProgress::save_run(QString session_file)
     if (_store_session.save_start(session_file))
         show();
     else
-		show_error();
+        show_error();
 
     QTimer::singleShot(100, this, SLOT(timeout()));
 }
@@ -94,6 +99,7 @@ void StoreProgress::export_run()
 
 void StoreProgress::show_error()
 {
+    _done = true;
     if (!_store_session.error().isEmpty()) {
         dialogs::DSMessageBox msg(parentWidget());
         msg.mBox()->setText(tr("Failed to save data."));
@@ -120,12 +126,9 @@ void StoreProgress::on_progress_updated()
     const QString err = _store_session.error();
 	if (!err.isEmpty()) {
 		show_error();
-        //close();
-        _done = true;
 	}
 
     if (p.first == p.second) {
-        //close();
         _done = true;
     }
 }

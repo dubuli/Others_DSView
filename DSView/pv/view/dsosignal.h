@@ -63,6 +63,8 @@ private:
     static const int AutoTime = 10000;
     static const int AutoLock = 3;
 
+    static const int TrigHRng = 2;
+
 public:
     enum DsoSetRegions {
         DSO_NONE = -1,
@@ -123,6 +125,7 @@ public:
     uint64_t get_factor();
     void set_show(bool show);
     bool show() const;
+    void set_mValid(bool valid);
 
     bool load_settings();
     int commit_settings();
@@ -164,6 +167,11 @@ public:
     int ratio2pos(double ratio) const;
     double value2ratio(int value) const;
     double pos2ratio(int pos) const;
+
+    /**
+     * paint prepare
+     **/
+    void paint_prepare();
 
     /**
      * Paints the background layer of the trace with a QPainter

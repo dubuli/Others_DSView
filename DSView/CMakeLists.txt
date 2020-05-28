@@ -92,6 +92,7 @@ endif()
 
 find_package(Threads)
 
+find_package(PythonLibs 3 EXACT)
 find_package(Boost 1.42 COMPONENTS filesystem system thread REQUIRED)
 find_package(libusb-1.0 REQUIRED)
 find_package(libzip REQUIRED)
@@ -105,8 +106,8 @@ set(DS_TITLE DSView)
 set(DS_DESCRIPTION "A GUI for instruments of DreamSourceLab")
 
 set(DS_VERSION_MAJOR 1)
-set(DS_VERSION_MINOR 0)
-set(DS_VERSION_MICRO 1)
+set(DS_VERSION_MINOR 1)
+set(DS_VERSION_MICRO 2)
 set(DS_VERSION_STRING
 	${DS_VERSION_MAJOR}.${DS_VERSION_MINOR}.${DS_VERSION_MICRO}
 )
@@ -280,6 +281,7 @@ set(DSView_HEADERS
     pv/view/logicsignal.h
     pv/view/analogsignal.h
     pv/view/dsosignal.h
+    mystyle.h
 )
 
 set(DSView_FORMS
@@ -390,6 +392,7 @@ else()
 	list(APPEND DSVIEW_LINK_LIBS ${PKGDEPS_LIBRARIES})
 endif()
 
+list(APPEND DSVIEW_LINK_LIBS ${PYTHON_LIBRARIES})
 
 add_executable(${PROJECT_NAME}
 	${DSView_SOURCES}
@@ -419,7 +422,7 @@ set_target_properties(${PROJECT_NAME} PROPERTIES INSTALL_RPATH "${CMAKE_INSTALL_
 # Install the executable.
 install(TARGETS ${PROJECT_NAME} DESTINATION bin/)
 install(DIRECTORY res DESTINATION share/${PROJECT_NAME})
-install(FILES icons/logo.png DESTINATION share/${PROJECT_NAME} RENAME logo.png)
+install(FILES icons/logo.svg DESTINATION share/${PROJECT_NAME} RENAME logo.svg)
 install(FILES ../NEWS25 DESTINATION share/${PROJECT_NAME} RENAME NEWS25)
 install(FILES ../NEWS31 DESTINATION share/${PROJECT_NAME} RENAME NEWS31)
 install(FILES ../ug25.pdf DESTINATION share/${PROJECT_NAME} RENAME ug25.pdf)

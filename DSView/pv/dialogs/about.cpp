@@ -38,7 +38,8 @@ namespace dialogs {
 About::About(QWidget *parent) :
     DSDialog(parent, true)
 {
-    setFixedHeight(360);
+    setFixedHeight(600);
+    setFixedWidth(800);
 
     #if defined(__x86_64__) || defined(_M_X64)
         QString arch = "x64";
@@ -46,6 +47,10 @@ About::About(QWidget *parent) :
         QString arch = "x86";
     #elif defined(__arm__) || defined(_M_ARM)
         QString arch = "arm";
+    #elif defined(__aarch64__)
+        QString arch = "arm64";
+    #else
+        QString arch = "other";
     #endif
 
     QString version = tr("<font size=24>DSView %1 (%2)</font><br />")
@@ -53,8 +58,8 @@ About::About(QWidget *parent) :
                       .arg(arch);
 
     QString url = tr("Website: <a href=\"%1\" style=\"color:#C0C0C0\">%1</a><br />"
-                     "Gitbub: <a href=\"%2\" style=\"color:#C0C0C0\">%2</a><br />"
-                     "Copyright：<a href=\"%3\" style=\"color:#C0C0C0\">%3</a><br />"
+                     "Github: <a href=\"%2\" style=\"color:#C0C0C0\">%2</a><br />"
+                     "Copyright:<a href=\"%3\" style=\"color:#C0C0C0\">%3</a><br />"
                      "<br /><br />")
                   .arg(QApplication::organizationDomain())
                   .arg("https://github.com/DreamSourceLab/DSView")
@@ -88,7 +93,7 @@ About::About(QWidget *parent) :
         }
     }
 
-    QPixmap pix(":/icons/dsl_logo.png");
+    QPixmap pix(":/icons/dsl_logo.svg");
     QImage logo = pix.toImage();
 
     QTextBrowser *about = new QTextBrowser(this);
@@ -105,7 +110,6 @@ About::About(QWidget *parent) :
 
     layout()->addLayout(xlayout);
     setTitle(tr("About"));
-    setFixedWidth(500);
 }
 
 About::~About()

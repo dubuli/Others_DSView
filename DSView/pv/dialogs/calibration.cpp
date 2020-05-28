@@ -45,7 +45,7 @@ const QString Calibration::VCOMB = QT_TR_NOOP(" VCOMB");
 Calibration::Calibration(QWidget *parent) :
     DSDialog(parent)
 {
-#ifdef Q_OS_OSX
+#ifdef Q_OS_DARWIN
     Qt::WindowFlags flags = windowFlags();
     this->setWindowFlags(flags | Qt::Tool);
 #endif
@@ -181,7 +181,7 @@ void Calibration::set_device(boost::shared_ptr<device::DevInst> dev_inst)
         _label_list.push_back(off_label);
 
         bool comb_comp_en = false;
-        gvar = _dev_inst->get_config(probe, NULL, SR_CONF_PROBE_COMB_COMP_EN);
+        gvar = _dev_inst->get_config(NULL, NULL, SR_CONF_PROBE_COMB_COMP_EN);
         if (gvar != NULL) {
             comb_comp_en = g_variant_get_boolean(gvar);
             g_variant_unref(gvar);

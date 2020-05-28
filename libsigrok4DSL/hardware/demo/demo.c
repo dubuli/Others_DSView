@@ -347,6 +347,11 @@ static int config_get(int id, GVariant **data, const struct sr_dev_inst *sdi,
             return SR_ERR;
         *data = g_variant_new_uint64(MAX_TIMEBASE);
         break;
+    case SR_CONF_MIN_TIMEBASE:
+        if (!sdi)
+            return SR_ERR;
+        *data = g_variant_new_uint64(MIN_TIMEBASE);
+        break;
     case SR_CONF_PROBE_COUPLING:
         *data = g_variant_new_byte(ch->coupling);
         break;
@@ -1069,11 +1074,10 @@ static int hw_dev_acquisition_stop(const struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-static int hw_dev_status_get(const struct sr_dev_inst *sdi, struct sr_status *status, gboolean prg, int begin, int end)
+static int hw_dev_status_get(const struct sr_dev_inst *sdi, struct sr_status *status, gboolean prg)
 {
     (void)prg;
-    (void)begin;
-    (void)end;
+
     if (sdi) {
         struct demo_context *const devc = sdi->priv;
         *status = devc->mstatus;

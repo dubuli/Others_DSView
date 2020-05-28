@@ -83,8 +83,8 @@ public:
 	static const int SignalSnapGridSize;
 
 	static const QColor CursorAreaColour;
-
 	static const QSizeF LabelPadding;
+    static const QString Unknown_Str;
 
     static const int WellSamplesPerPixel = 2048;
     static constexpr double MaxViewRate = 1.0;
@@ -101,6 +101,7 @@ public:
     static const QColor Green;
     static const QColor Purple;
     static const QColor LightBlue;
+    static const QColor LightRed;
 
 public:
     explicit View(SigSession &session, pv::toolbars::SamplingBar *sampling_bar, QWidget *parent = 0);
@@ -118,13 +119,19 @@ public:
     int64_t offset() const;
 	int v_offset() const;
 
+    /**
+     * trigger position fix
+     */
+    double trig_hoff() const;
+    void set_trig_hoff(double hoff);
+
     int64_t get_min_offset();
     int64_t get_max_offset();
 
     void capture_init();
 
 	void zoom(double steps);
-	void zoom(double steps, int offset);
+    bool zoom(double steps, int offset);
 
 	/**
 	 * Sets the scale and offset.
@@ -227,6 +234,12 @@ public:
     bool back_ready() const;
     void set_back(bool ready);
 
+    /*
+     * untils
+     */
+    double index2pixel(uint64_t index, bool has_hoff = true);
+    uint64_t pixel2index(double pixel);
+
 signals:
 	void hover_point_changed();
 
@@ -292,6 +305,9 @@ public slots:
     void set_trig_time();
     bool trig_time_setted();
 
+    //
+    void header_updated();
+
 private slots:
 
 	void h_scroll_value_changed(int value);
@@ -300,8 +316,6 @@ private slots:
 	void marker_time_changed();
 
     void on_traces_moved();
-
-    void header_updated();
 
     void receive_trigger(quint64 trig_pos);
     void set_trig_pos(int percent);
@@ -350,6 +364,9 @@ private:
     int _spanY;
     int _signalHeight;
     bool _updating_scroll;
+
+    // trigger position fix
+    double _trig_hoff;
 
 	bool _show_cursors;
     std::list<Cursor*> _cursorList;
